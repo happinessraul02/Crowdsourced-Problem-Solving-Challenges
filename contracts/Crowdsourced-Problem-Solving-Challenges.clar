@@ -1,3 +1,15 @@
+(define-constant ERR-NOT-FOUND (err u404))
+(define-constant ERR-UNAUTHORIZED (err u401))
+(define-constant ERR-EXPIRED (err u410))
+(define-constant ERR-ALREADY-VOTED (err u409))
+(define-constant ERR-INSUFFICIENT-FUNDS (err u402))
+(define-constant ERR-INVALID-STATUS (err u400))
+
+(define-constant REPUTATION-SOLUTION-SUBMIT u10)
+(define-constant REPUTATION-VOTE-RECEIVED u5)
+(define-constant REPUTATION-CHALLENGE-COMPLETE u25)
+(define-constant REPUTATION-SOLUTION-ACCEPT u50)
+
 (define-data-var challenge-counter uint u0)
 (define-data-var solution-counter uint u0)
 
@@ -36,12 +48,6 @@
   { balance: uint }
 )
 
-(define-constant ERR-NOT-FOUND (err u404))
-(define-constant ERR-UNAUTHORIZED (err u401))
-(define-constant ERR-EXPIRED (err u410))
-(define-constant ERR-ALREADY-VOTED (err u409))
-(define-constant ERR-INSUFFICIENT-FUNDS (err u402))
-(define-constant ERR-INVALID-STATUS (err u400))
 
 (define-public (create-challenge (title (string-ascii 100)) (description (string-ascii 500)) (reward uint) (duration uint))
   (let (
@@ -205,4 +211,113 @@
 
 (define-read-only (has-voted (voter principal) (solution-id uint))
   (is-some (map-get? votes { voter: voter, solution-id: solution-id }))
+)
+
+(define-map user-reputation
+  { user: principal }
+  { 
+    score: uint,
+    solutions-submitted: uint,
+    solutions-accepted: uint,
+    votes-received: uint,
+    challenges-created: uint
+  }
+)
+
+(define-map reputation-milestones
+  { user: principal, milestone: uint }
+  { achieved: bool, timestamp: uint }
+)
+
+(define-public (update-reputation-submit (solver principal))
+  (let (
+    (current-rep (default-to 
+      { score: u0, solutions-submitted: u0, solutions-accepted: u0, votes-received: u0, challenges-created: u0 }
+      (map-get? user-reputation { user: solver })
+    ))
+  )
+    (begin
+      (map-set user-reputation
+        { user: solver }
+        (merge current-rep {
+          score: (+ (get score current-rep) REPUTATION-SOLUTION-SUBMIT),
+          solutions-submitted: (+ (get solutions-submitted current-rep) u1)
+        })
+      )
+      (check-milestones solver (+ (get score current-rep) REPUTATION-SOLUTION-SUBMIT))
+    )
+  )
+)
+
+(define-public (update-reputation-vote (solver principal))
+  (let (
+    (current-rep (default-to 
+      { score: u0, solutions-submitted: u0, solutions-accepted: u0, votes-received: u0, challenges-created: u0 }
+      (map-get? user-reputation { user: solver })
+    ))
+  )
+    (begin
+      (map-set user-reputation
+        { user: solver }
+        (merge current-rep {
+          score: (+ (get score current-rep) REPUTATION-VOTE-RECEIVED),
+          votes-received: (+ (get votes-received current-rep) u1)
+        })
+      )
+      (check-milestones solver (+ (get score current-rep) REPUTATION-VOTE-RECEIVED))
+    )
+  )
+)
+
+(define-public (update-reputation-accept (solver principal))
+  (let (
+    (current-rep (default-to 
+      { score: u0, solutions-submitted: u0, solutions-accepted: u0, votes-received: u0, challenges-created: u0 }
+      (map-get? user-reputation { user: solver })
+    ))
+  )
+    (begin
+      (map-set user-reputation
+        { user: solver }
+        (merge current-rep {
+          score: (+ (get score current-rep) REPUTATION-SOLUTION-ACCEPT),
+          solutions-accepted: (+ (get solutions-accepted current-rep) u1)
+        })
+      )
+      (check-milestones solver (+ (get score current-rep) REPUTATION-SOLUTION-ACCEPT))
+    )
+  )
+)
+
+(define-private (check-milestones (user principal) (new-score uint))
+  (begin
+    (if (and (>= new-score u100) (is-none (map-get? reputation-milestones { user: user, milestone: u100 })))
+      (map-set reputation-milestones { user: user, milestone: u100 } { achieved: true, timestamp: stacks-block-height })
+      false
+    )
+    (if (and (>= new-score u500) (is-none (map-get? reputation-milestones { user: user, milestone: u500 })))
+      (map-set reputation-milestones { user: user, milestone: u500 } { achieved: true, timestamp: stacks-block-height })
+      false
+    )
+    (if (and (>= new-score u1000) (is-none (map-get? reputation-milestones { user: user, milestone: u1000 })))
+      (map-set reputation-milestones { user: user, milestone: u1000 } { achieved: true, timestamp: stacks-block-height })
+      false
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-user-reputation (user principal))
+  (default-to 
+    { score: u0, solutions-submitted: u0, solutions-accepted: u0, votes-received: u0, challenges-created: u0 }
+    (map-get? user-reputation { user: user })
+  )
+)
+
+(define-read-only (get-reputation-score (user principal))
+  (get score (get-user-reputation user))
+)
+
+(define-read-only (has-milestone (user principal) (milestone uint))
+  (is-some (map-get? reputation-milestones { user: user, milestone: milestone }))
 )
