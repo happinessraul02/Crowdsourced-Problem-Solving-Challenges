@@ -10,6 +10,8 @@
 (define-constant REPUTATION-CHALLENGE-COMPLETE u25)
 (define-constant REPUTATION-SOLUTION-ACCEPT u50)
 
+(define-constant BOOST-MIN-AMOUNT u1)
+
 (define-data-var challenge-counter uint u0)
 (define-data-var solution-counter uint u0)
 
@@ -320,4 +322,75 @@
 
 (define-read-only (has-milestone (user principal) (milestone uint))
   (is-some (map-get? reputation-milestones { user: user, milestone: milestone }))
+)
+
+
+(define-map challenge-boosts
+  { challenge-id: uint, booster: principal }
+  { amount: uint, timestamp: uint }
+)
+
+(define-map total-boosts
+  { challenge-id: uint }
+  { total-amount: uint, booster-count: uint }
+)
+
+(define-public (boost-challenge-bounty (challenge-id uint) (boost-amount uint))
+  (let (
+    (challenge (unwrap! (map-get? challenges { challenge-id: challenge-id }) ERR-NOT-FOUND))
+    (current-boost (default-to u0 (get amount (map-get? challenge-boosts { challenge-id: challenge-id, booster: tx-sender }))))
+    (current-totals (default-to { total-amount: u0, booster-count: u0 } (map-get? total-boosts { challenge-id: challenge-id })))
+  )
+    (asserts! (is-eq (get status challenge) "open") ERR-INVALID-STATUS)
+    (asserts! (< stacks-block-height (get deadline challenge)) ERR-EXPIRED)
+    (asserts! (>= boost-amount BOOST-MIN-AMOUNT) ERR-INSUFFICIENT-FUNDS)
+    (try! (transfer-tokens tx-sender boost-amount))
+    (map-set challenge-boosts
+      { challenge-id: challenge-id, booster: tx-sender }
+      { amount: (+ current-boost boost-amount), timestamp: stacks-block-height }
+    )
+    (map-set total-boosts
+      { challenge-id: challenge-id }
+      { 
+        total-amount: (+ (get total-amount current-totals) boost-amount),
+        booster-count: (if (is-eq current-boost u0) (+ (get booster-count current-totals) u1) (get booster-count current-totals))
+      }
+    )
+    (map-set challenges
+      { challenge-id: challenge-id }
+      (merge challenge { reward: (+ (get reward challenge) boost-amount) })
+    )
+    (ok boost-amount)
+  )
+)
+
+(define-private (refund-boosters (challenge-id uint) (booster principal) (amount uint))
+  (let (
+    (current-balance (default-to u0 (get balance (map-get? user-balances { user: booster }))))
+  )
+    (map-set user-balances
+      { user: booster }
+      { balance: (+ current-balance amount) }
+    )
+    (ok true)
+  )
+)
+
+(define-read-only (get-challenge-boost (challenge-id uint) (booster principal))
+  (map-get? challenge-boosts { challenge-id: challenge-id, booster: booster })
+)
+
+(define-read-only (get-total-boosts (challenge-id uint))
+  (default-to { total-amount: u0, booster-count: u0 } (map-get? total-boosts { challenge-id: challenge-id }))
+)
+
+(define-read-only (get-boosted-reward (challenge-id uint))
+  (let (
+    (challenge (map-get? challenges { challenge-id: challenge-id }))
+  )
+    (match challenge
+      some-challenge (ok (get reward some-challenge))
+      ERR-NOT-FOUND
+    )
+  )
 )
