@@ -10,6 +10,15 @@
 (define-constant REPUTATION-CHALLENGE-COMPLETE u25)
 (define-constant REPUTATION-SOLUTION-ACCEPT u50)
 
+(define-constant ERR-POOL-EXISTS (err u420))
+(define-constant ERR-POOL-NOT-FOUND (err u421))
+(define-constant ERR-NOT-POOL-MEMBER (err u422))
+(define-constant ERR-ALREADY-APPROVED (err u423))
+(define-constant ERR-INVALID-SPLIT (err u424))
+(define-constant ERR-POOL-NOT-READY (err u425))
+
+(define-data-var pool-counter uint u0)
+
 (define-constant BOOST-MIN-AMOUNT u1)
 
 (define-data-var challenge-counter uint u0)
@@ -393,4 +402,81 @@
       ERR-NOT-FOUND
     )
   )
+)
+
+(define-map collaboration-pools
+  { pool-id: uint }
+  {
+    challenge-id: uint,
+    creator: principal,
+    members: (list 5 principal),
+    splits: (list 5 uint),
+    approvals: (list 5 principal),
+    is-active: bool,
+    solution-id: (optional uint)
+  }
+)
+
+(define-map pool-memberships
+  { user: principal, challenge-id: uint }
+  { pool-id: uint }
+)
+
+(define-public (create-collaboration-pool 
+  (challenge-id uint) 
+  (members (list 5 principal)) 
+  (splits (list 5 uint)))
+  (let (
+    (pool-id (+ (var-get pool-counter) u1))
+    (challenge (unwrap! (map-get? challenges { challenge-id: challenge-id }) ERR-NOT-FOUND))
+    (total-split (fold + splits u0))
+  )
+    (asserts! (is-eq (get status challenge) "open") ERR-INVALID-STATUS)
+    (asserts! (is-eq total-split u100) ERR-INVALID-SPLIT)
+    (asserts! (is-none (map-get? pool-memberships { user: tx-sender, challenge-id: challenge-id })) ERR-POOL-EXISTS)
+    (map-set collaboration-pools
+      { pool-id: pool-id }
+      {
+        challenge-id: challenge-id,
+        creator: tx-sender,
+        members: members,
+        splits: splits,
+        approvals: (list tx-sender),
+        is-active: false,
+        solution-id: none
+      }
+    )
+    (map-set pool-memberships { user: tx-sender, challenge-id: challenge-id } { pool-id: pool-id })
+    (var-set pool-counter pool-id)
+    (ok pool-id)
+  )
+)
+
+(define-public (approve-pool (pool-id uint))
+  (let (
+    (pool (unwrap! (map-get? collaboration-pools { pool-id: pool-id }) ERR-POOL-NOT-FOUND))
+    (is-member (is-some (index-of (get members pool) tx-sender)))
+    (already-approved (is-some (index-of (get approvals pool) tx-sender)))
+  )
+    (asserts! is-member ERR-NOT-POOL-MEMBER)
+    (asserts! (not already-approved) ERR-ALREADY-APPROVED)
+    (let (
+      (new-approvals (unwrap-panic (as-max-len? (append (get approvals pool) tx-sender) u5)))
+      (all-approved (is-eq (len new-approvals) (len (get members pool))))
+    )
+      (map-set collaboration-pools
+        { pool-id: pool-id }
+        (merge pool { approvals: new-approvals, is-active: all-approved })
+      )
+      (ok all-approved)
+    )
+  )
+)
+
+(define-read-only (get-collaboration-pool (pool-id uint))
+  (map-get? collaboration-pools { pool-id: pool-id })
+)
+
+(define-read-only (get-user-pool (user principal) (challenge-id uint))
+  (map-get? pool-memberships { user: user, challenge-id: challenge-id })
 )
