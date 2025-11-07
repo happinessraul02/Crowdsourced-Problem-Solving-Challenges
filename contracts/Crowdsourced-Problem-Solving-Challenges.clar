@@ -17,6 +17,10 @@
 (define-constant ERR-INVALID-SPLIT (err u424))
 (define-constant ERR-POOL-NOT-READY (err u425))
 
+(define-constant ERR-NOT-DELEGATED (err u430))
+(define-constant ERR-ALREADY-DELEGATED (err u431))
+(define-constant ERR-DELEGATION-DISABLED (err u432))
+
 (define-data-var pool-counter uint u0)
 
 (define-constant BOOST-MIN-AMOUNT u1)
@@ -479,4 +483,80 @@
 
 (define-read-only (get-user-pool (user principal) (challenge-id uint))
   (map-get? pool-memberships { user: user, challenge-id: challenge-id })
+)
+
+(define-map challenge-delegations
+  { challenge-id: uint }
+  { enabled: bool, delegatees: (list 10 principal) }
+)
+
+(define-map user-delegation-status
+  { challenge-id: uint, delegatee: principal }
+  { delegated: bool, delegated-at: uint }
+)
+
+(define-public (enable-delegation (challenge-id uint))
+  (let (
+    (challenge (unwrap! (map-get? challenges { challenge-id: challenge-id }) ERR-NOT-FOUND))
+  )
+    (asserts! (is-eq tx-sender (get creator challenge)) ERR-UNAUTHORIZED)
+    (asserts! (is-eq (get status challenge) "open") ERR-INVALID-STATUS)
+    (map-set challenge-delegations
+      { challenge-id: challenge-id }
+      { enabled: true, delegatees: (list) }
+    )
+    (ok true)
+  )
+)
+
+(define-public (delegate-challenge (challenge-id uint) (delegatee principal))
+  (let (
+    (challenge (unwrap! (map-get? challenges { challenge-id: challenge-id }) ERR-NOT-FOUND))
+    (delegation (unwrap! (map-get? challenge-delegations { challenge-id: challenge-id }) ERR-DELEGATION-DISABLED))
+    (already-delegated (is-some (index-of (get delegatees delegation) delegatee)))
+  )
+    (asserts! (is-eq tx-sender (get creator challenge)) ERR-UNAUTHORIZED)
+    (asserts! (get enabled delegation) ERR-DELEGATION-DISABLED)
+    (asserts! (not already-delegated) ERR-ALREADY-DELEGATED)
+    (let (
+      (new-delegatees (unwrap-panic (as-max-len? (append (get delegatees delegation) delegatee) u10)))
+    )
+      (map-set challenge-delegations
+        { challenge-id: challenge-id }
+        (merge delegation { delegatees: new-delegatees })
+      )
+      (map-set user-delegation-status
+        { challenge-id: challenge-id, delegatee: delegatee }
+        { delegated: true, delegated-at: stacks-block-height }
+      )
+      (ok true)
+    )
+  )
+)
+
+(define-public (submit-delegated-solution (challenge-id uint) (content (string-ascii 1000)))
+  (let (
+    (delegation (map-get? challenge-delegations { challenge-id: challenge-id }))
+    (is-delegated (map-get? user-delegation-status { challenge-id: challenge-id, delegatee: tx-sender }))
+  )
+    (match delegation
+      some-delegation
+        (if (get enabled some-delegation)
+          (begin
+            (asserts! (is-some is-delegated) ERR-NOT-DELEGATED)
+            (submit-solution challenge-id content)
+          )
+          (submit-solution challenge-id content)
+        )
+      (submit-solution challenge-id content)
+    )
+  )
+)
+
+(define-read-only (get-delegation-info (challenge-id uint))
+  (map-get? challenge-delegations { challenge-id: challenge-id })
+)
+
+(define-read-only (is-delegated (challenge-id uint) (delegatee principal))
+  (is-some (map-get? user-delegation-status { challenge-id: challenge-id, delegatee: delegatee }))
 )
